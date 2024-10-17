@@ -1,0 +1,4 @@
+crawler~=0.1.0
+pandas~=2.2.2
+setuptools~=67.8.0
+numpy~=1.25.2
