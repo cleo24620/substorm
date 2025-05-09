@@ -10,7 +10,7 @@ import os
 from substorm import short_funcs, data
 
 # %%
-dir = r"\\Diskstation1\file_three\Alfven wave\OMNIData"  # the dir where the original files saved
+dir = r"Z:\aw\substorm\OMNIData"  # the dir where the original files saved
 fns = os.listdir(dir)  # pay attention the dir just save the original files, not include other files.
 sdir = "./data/pkl010"  # dir where the 010 version files saved
 for fn in fns:
