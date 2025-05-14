@@ -10,8 +10,7 @@ import time
 import pandas as pd
 
 from substorm import product
-from substorm.identification import SubStorm
-from substorm.short_funcs import get_fn_time
+from substorm.determine import SubStorm, get_fn_time
 
 dir = r"D:\cleo\master\substorm\data\pkl020"
 fns = os.listdir(dir)
@@ -40,11 +39,11 @@ for fn in fns:
     st = time.time()
     fp = os.path.join(dir, fn)
     data = pd.read_pickle(fp)
-    substorm = SubStorm(data['IMF_Bz'], data['AE'], data['AL'], data['AU'])
+    substorm = SubStorm(data['IMF_Bz'], data['AL'], None, None)
     expansion, recovery, growth = substorm.priority_and_precede_follow_filter()
     et = time.time()
     print(f"get the phases info, cost {et - st}s.")
     if asc_save:
-        product.save_list(expansion, recovery, growth, sdir_asc, sfn_asc, stype='asc')
+        substorm.determine.save_list(expansion, recovery, growth, sdir_asc, sfn_asc, stype='asc')
     if pkl_save:
-        product.save_list(expansion, recovery, growth, sdir_pkl, sfn_pkl, stype='pkl')
+        substorm.determine.save_list(expansion, recovery, growth, sdir_pkl, sfn_pkl, stype='pkl')

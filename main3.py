@@ -7,13 +7,16 @@
 # %%
 import pandas as pd
 
-from substorm.identification import SubStorm
+from substorm.determine import SubStorm
 
 # %%
-fp = r"D:\cleo\master\substorm\data\pkl020\hro1_omni_200409_020.pkl"
+fp = "data/pkl020/hro1_omni_200409_020.pkl"
 data = pd.read_pickle(fp)
-# %%
-substorm = SubStorm(data['IMF_Bz'], data['AE'], data['AL'], data['AU'])
+
+from config import AL_MEDIAN, AL_DERIVATIVES_MEDIAN
+
+substorm = SubStorm(data['IMF_Bz'], data['AL'], lower_electrojet_index_median=AL_MEDIAN,
+                    lower_electrojet_index_diff_time_median=AL_DERIVATIVES_MEDIAN)
 
 expansion, recovery, growth = substorm.priority_and_precede_follow_filter()
 
