@@ -1,10 +1,12 @@
-import os
 import re
 import time
+from pathlib import Path
 
 import pandas as pd
 from numpy.typing import NDArray
 from pandas import DataFrame
+
+import config
 
 
 def get_fn_time(fn: str) -> str:
@@ -126,11 +128,11 @@ def apply_priority_to_phases_intervals(
             adjusted_low_priority_intervals.append(
                 {"start": low_interval_st, "end": low_interval_et}
             )
-    adjusted_low_priority_intervals_df = pd.DataFrame(adjusted_low_priority_intervals)
+    adjusted_low_priority_intervals_df = pd.DataFrame(adjusted_low_priority_intervals, columns=["start", "end"])
     return adjusted_low_priority_intervals_df
 
 
-class SubStorm:
+class SubstormDetermine:
     """
     identification of substorms
     """
@@ -138,35 +140,62 @@ class SubStorm:
     def __init__(
             self,
             timestamps: NDArray,
-            imf_bz: NDArray,
-            lower_electrojet_index: NDArray,
+            imf_bz: pd.Series,
+            lower_electrojet_index: pd.Series,
             lower_electrojet_index_median: float,
-            lower_electrojet_index_diff_time_median: float,
+            lower_electrojet_index_derivatives_median: float,
+            nan_ratio_threshold: float = config.MAX_NAN_RATIO,
     ):
+        assert timestamps.size == imf_bz.size == lower_electrojet_index.size
         self.timestamps = timestamps
         self.imf_bz = imf_bz
-        self.al = lower_electrojet_index
+        self.lower_electrojet_index = lower_electrojet_index
         self.median = lower_electrojet_index_median
-        self.diff_time_median = lower_electrojet_index_diff_time_median
+        self.lower_electrojet_index_derivatives_median = lower_electrojet_index_derivatives_median
+        self.nan_ratio_threshold = nan_ratio_threshold
+
+        self.expansion_phase, self.recovery_phase, self.growth_phase = None, None, None
+        if self.check_nan_ratio():
+            self.lower_electrojet_index_derivatives = self.lower_electrojet_index.diff()
+            # Get the final result.
+            self.expansion_phase, self.recovery_phase, self.growth_phase = self.priority_and_precede_follow_filter()
+
+    def check_nan_ratio(self):
+        # interplanetary magnetic field z component
+        imfbz_nan_count = self.imf_bz.isna().sum()
+        lower_ele_index_nan_count = self.lower_electrojet_index.isna().sum()
+        total_elements = self.imf_bz.size
+        imfbz_nan_proportion = imfbz_nan_count / total_elements
+        lower_ele_index_nan_proportion = lower_ele_index_nan_count / total_elements
+
+        if imfbz_nan_proportion > self.nan_ratio_threshold:
+            print(f"The NaN proportion of interplanetary magnetic field z component is {imfbz_nan_proportion:.2f}")
+            print(f"It exceeds the set threshold {self.nan_ratio_threshold:.2f}.")
+            print("The substorm phase determination will be skipped.")
+            return False
+        elif lower_ele_index_nan_proportion > self.nan_ratio_threshold:
+            print(f"The NaN proportion of lower electrojet index is {lower_ele_index_nan_proportion:.2f}.")
+            print(f"It exceeds the set threshold {self.nan_ratio_threshold:.2f}.")
+            print("The substorm phase determination will be skipped.")
+            return False
+        else:
+            return True
 
     def pre_expansion(self) -> pd.DataFrame | None:
         """
         get the pre-expansion intervals
         @return:
         """
-        # apply diff time condition
-        al_series = pd.Series(self.al, index=self.timestamps)
-        al_diff = al_series.diff()
-        intervals_expansion1 = get_intervals(al_diff, al_diff < self.diff_time_median)
+        intervals_expansion1 = get_intervals(self.lower_electrojet_index_derivatives,
+                                             self.lower_electrojet_index_derivatives < self.lower_electrojet_index_derivatives_median)
 
         # 对每个interval在原series中进行切片并获取最小值
         min_values = intervals_expansion1.apply(
-            lambda x: self.al[x[0]: x[1]].min()
+            lambda x: self.lower_electrojet_index[x[0]: x[1]].min()
         )  # return pd.Series
 
         # 保留最小值小于 median 的区间 (2nd condition)
         intervals_expansion12 = intervals_expansion1[min_values < self.median]
-        # fixme: deal with return None problem (for now, use the pkl020 file, i don't encounter this problem)
         if len(intervals_expansion12) == 0:
             return None
 
@@ -178,7 +207,7 @@ class SubStorm:
         for i in range(len(merged_intervals_expansion)):
             start = merged_intervals_expansion.iloc[i]["start"]
             end = merged_intervals_expansion.iloc[i]["end"]
-            sliced_al = al_series[start:end]
+            sliced_al = self.lower_electrojet_index[start:end]
             start_time = sliced_al.idxmax()
             end_time = sliced_al.idxmin()
             if start_time > end_time:
@@ -203,8 +232,8 @@ class SubStorm:
         @return:
         """
         # Based on the given condition, get the intervals from data.
-        al_series = pd.Series(self.al, index=self.timestamps)
-        intervals_recovery = get_intervals(al_series, al_series < self.median)
+        al_series = pd.Series(self.lower_electrojet_index, index=self.timestamps)
+        intervals_recovery = get_intervals(self.lower_electrojet_index, self.lower_electrojet_index < self.median)
         if len(intervals_recovery) == 0:
             return None
 
@@ -218,8 +247,7 @@ class SubStorm:
 
     def pre_growth(self) -> pd.DataFrame | None:
         # Based on the given condition, get the intervals from data.
-        imf_bz_series = pd.Series(self.imf_bz, index=self.timestamps)
-        intervals_growth = get_intervals(imf_bz_series, imf_bz_series < 0)
+        intervals_growth = get_intervals(self.imf_bz, self.imf_bz < 0)
         if len(intervals_growth) == 0:
             return None
 
@@ -243,16 +271,21 @@ class SubStorm:
         Use the priority and precede follow filter to get the final intervals.
         @return:
         """
+        # Column names
+        column_names = ['start', 'end']
         # if some intervals are None
         remove_1m_intervals_expansion = self.pre_expansion()
         if remove_1m_intervals_expansion is None:
-            return None, None, None
+            return pd.DataFrame(columns=column_names), pd.DataFrame(columns=column_names), pd.DataFrame(
+                columns=column_names)
         remove_1m_intervals_recovery = self.pre_recovery()
         if remove_1m_intervals_recovery is None:
-            return remove_1m_intervals_expansion, None, None
+            return remove_1m_intervals_expansion.reset_index(drop=True), pd.DataFrame(
+                columns=column_names), pd.DataFrame(columns=column_names)
         remove_1m_intervals_growth = self.pre_growth()
         if remove_1m_intervals_growth is None:
-            return remove_1m_intervals_expansion, remove_1m_intervals_recovery, None
+            return remove_1m_intervals_expansion.reset_index(drop=True), remove_1m_intervals_recovery.reset_index(
+                drop=True), pd.DataFrame(columns=column_names)
 
         # priority: expansion and recovery
         adjusted_recovery_intervals = apply_priority_to_phases_intervals(
@@ -279,9 +312,9 @@ class SubStorm:
         ]
 
         return (
-            remove_1m_intervals_expansion,
-            follow_recovery_intervals,
-            precede_growth_intervals,
+            remove_1m_intervals_expansion.reset_index(drop=True),
+            follow_recovery_intervals.reset_index(drop=True),
+            precede_growth_intervals.reset_index(drop=True),
         )
 
 
@@ -291,8 +324,8 @@ def save_list(
         growth_phase: pd.DataFrame,
         sdir: str,
         sfn: str,
-        stype: str,
-) -> None:
+        stype: str = 'asc',
+):
     """
 
     @param expansion_phase:
@@ -303,6 +336,8 @@ def save_list(
     @param stype: the type of the file to save
     @return:
     """
+    sdir = Path(sdir)
+    sdir.mkdir(parents=True, exist_ok=True)
     if expansion_phase.empty:
         print("the expansion phase is empty")
         return None
@@ -359,12 +394,12 @@ def save_list(
                 }
             )
     result_df = pd.DataFrame(results)
-    sfp = os.path.join(sdir, sfn)
-    if stype == "pkl":
+    sfp = sdir / sfn
+    if stype == ".pkl":
         result_df.to_pickle(sfp)
         print(f"saved {sfn}")
-    if stype == "asc":
-        result_df.to_csv(sfp)
+    if stype == '.csv':
+        result_df.to_csv(sfp, index=False)
         print(f"saved {sfn}")
     et = time.time()
     print(f"the {sfn} write took {et - st}")

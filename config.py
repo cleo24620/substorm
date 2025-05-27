@@ -9,10 +9,13 @@ from pathlib import Path
 import pandas as pd
 
 # crawler
-HRO_MODIFIED_URL_Y = "https://spdf.gsfc.nasa.gov/pub/data/omni/high_res_omni/modified/"  # url of the year file
-HRO_MODIFIED_URL_M = "https://spdf.gsfc.nasa.gov/pub/data/omni/high_res_omni/modified/monthly_1min/"  # url of the month file
+OMNI_HRO_MODIFIED_URL_Y = "https://spdf.gsfc.nasa.gov/pub/data/omni/high_res_omni/modified/"  # url of the year file
+OMNI_HRO_MODIFIED_URL_M = "https://spdf.gsfc.nasa.gov/pub/data/omni/high_res_omni/modified/monthly_1min/"  # url of the month file
 HTML_TAG_M = "a"
-HREF_PATTERN_M = r"omni_min\d{6}.asc"  # regular expression pattern
+HREF_REGEX_PATTERN_M = r"^omni_min(\d{4})(0[1-9]|1[0-2])\.asc$"  # regular expression pattern
+PROXIES = {'http': 'http://127.0.0.1:7890',
+           'https': 'http://127.0.0.1:7890'
+           }
 
 # variables
 HRO_1M_MODIFIED_VARS = ["Year", "Day", "Hour", "Minute", "ID for IMF spacecraft", "ID for SW Plasma spacecraft",
@@ -52,18 +55,24 @@ OMNI_ORIGINAL_DATA_EXTENSION = 'asc'
 OMNI_PROCESSED_DATA_DIR = OMNI_DATA_DIR / 'processed'
 OMNI_PROCESSED_DATA_PREFIX = 'processed'
 OMNI_PROCESSED_DATA_EXTENSIONS = ['pkl', 'csv']
+OMNI_DAY_DIR = OMNI_DATA_DIR / 'days'
+OMNI_DAY_PREFIX = ''
+OMNI_DAY_EXTENSION = 'csv'
 OMNI_START_YEAR = 1995
 OMNI_START_MONTH = 1
 OMNI_START_DAY = 1
-OMNI_END_YEAR = 2024
-OMNI_END_MONTH = 8
+OMNI_END_YEAR = 2025
+OMNI_END_MONTH = 3
 OMNI_END_DAY = 31
+OMNI_SUBSTORM_LIST_DIR = OMNI_DATA_DIR / 'substorm_list'
 SUPERMAG_DATA_DIR = Path("./data/supermag")
 SME_FILEPATH = SUPERMAG_DATA_DIR / "supermag_electrojet_index_one_miniut_all_years.csv"
 SMU_SML_FILEPATH = (SUPERMAG_DATA_DIR / "supermag_electrojet_upper_lower_index_one_miniut_all_years.csv")
 SUPERMAG_IMFB_FILEPATH = (SUPERMAG_DATA_DIR / "supermag_imf_b_gsm_one_minute_all_years.csv")
 SUPERMAG_DESCRIBE_FILEPATH = SUPERMAG_DATA_DIR / "describe_stats.csv"
 NEGATIVE_SML_DERIVATIVES_FP = SUPERMAG_DATA_DIR / "negative_sml_derivatives.json"
+SUPERMAG_DAY_DIR = SUPERMAG_DATA_DIR / 'days'
+SUPERMAG_SUBSTORM_LIST_DIR = SUPERMAG_DATA_DIR / 'substorm_list'
 
 # medians
 AL_MEDIAN = -50  # reference
@@ -74,3 +83,26 @@ SML_MEDIAN = DESCRIBE_STATS["SML"]["50%"]
 with open(NEGATIVE_SML_DERIVATIVES_FP, "r") as f:
     loaded_data_json = json.load(f)
 NEG_SML_DERIVATIVES_MEDIAN = loaded_data_json["neg_sml_derivatives_median"]
+
+# Substorm column names
+SUBSTORM_COLUMN_NAMES = ['growth_phase_start',
+                         'growth_phase_end',
+                         'expansion_phase_start',
+                         'expansion_phase_end',
+                         'recovery_phase_start',
+                         'recovery_phase_end'
+                         ]
+
+SUBSTORM_PHASE_DURATION_NAMES = ['growth_duration',
+                                 'expansion_duration',
+                                 'recovery_duration', ]
+SUBSTORM_DURATION_NAME = 'substorm_duration'
+OMNI_SUBSTORM_DURATION_DIR = OMNI_DATA_DIR / 'substorm_duration'
+SUPERMAG_SUBSTORM_DURATION_DIR = SUPERMAG_DATA_DIR / 'substorm_duration'
+OMNI_SUBSTORM_LIST_STATS_DIR = OMNI_DATA_DIR / 'substorm_list_statistics'
+SUPERMAG_SUBSTORM_LIST_STATS_DIR = SUPERMAG_DATA_DIR / 'substorm_list_statistics'
+DURATIONS_AVERAGE_NAMES = ['growth_durations', 'expansion_durations', 'recovery_durations', 'substorm_durations',
+                           ]
+RATIOS_AVERAGE_NAME = 'substorm_duration_ratios'
+OMNI_STATS_AVERAGE_FP = OMNI_DATA_DIR / 'substorm_stats_average.json'
+SUPERMAG_STATS_AVERAGE_FP = SUPERMAG_DATA_DIR / 'substorm_stats_average.json'

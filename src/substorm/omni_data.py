@@ -1,12 +1,14 @@
 import os
 import re
-from typing import List
+from pathlib import Path
+from typing import List, Optional
 
 import numpy as np
 import pandas as pd
+import requests
+from bs4 import BeautifulSoup
 
 import config
-from crawler import Crawler
 
 
 def rename_files_with_date_hyphen(directory_path: str, dry_run: bool = True):
@@ -22,8 +24,8 @@ def rename_files_with_date_hyphen(directory_path: str, dry_run: bool = True):
         print(f"Error: Directory '{directory_path}' not found or is not a directory.")
         return
 
-    date_pattern = re.compile(r"(\d{4})(0[1-9]|1[0-2])")
-    replacement_format = r"\1-\2"
+    date_pattern = re.compile(r"_(\d{4})-(0[1-9]|1[0-2])")
+    replacement_format = r"\1\2"
 
     print(f"\nScanning directory: {os.path.abspath(directory_path)}")
     if dry_run:
@@ -74,68 +76,40 @@ def rename_files_with_date_hyphen(directory_path: str, dry_run: bool = True):
         print(f"Files skipped due to errors: {skipped_due_to_error}")
 
 
-def process_data(original_dir_path: str, processed_dir: str, prefix: str, extensions: List[str]):
-    os.makedirs(processed_dir, exist_ok=True)
-    for extension in extensions:
-        os.makedirs(os.path.join(processed_dir, extension), exist_ok=True)
-    original_filenames = os.listdir(original_dir_path)
+def process_data(original_filepath: Path, processed_dir: Path):
     print("--- Processing Data ---")
-    for filename in original_filenames:
-        skip = False  # Reset
-        print(f"\nProcessing file: {filename}")
-        filepath = os.path.join(original_dir_path, filename)
-        df = pd.read_csv(filepath, sep=config.OMNI_ORIGINAL_DATA_SEP, names=config.HRO_1M_MODIFIED_VARS)
+    print(f"\nProcessing file: {original_filepath.name}")
+    df = pd.read_csv(original_filepath, sep=config.OMNI_ORIGINAL_DATA_SEP, names=config.HRO_1M_MODIFIED_VARS)
 
-        # Select variables.
-        df = df[config.SELECTED_VARS]
+    # Select variables.
+    df = df[config.SELECTED_VARS]
 
-        # Rename selected variables.
-        df = df.rename(columns=config.SELECTED_VARS_RENAMES)
+    # Rename selected variables.
+    df = df.rename(columns=config.SELECTED_VARS_RENAMES)
 
-        # timestamps index
-        df['date'] = pd.to_datetime(df['Year'].astype(str) + df['Day'].astype(str), format='%Y%j')
-        df['timestamps'] = df['date'] + pd.to_timedelta(df['Hour'], unit='h') + pd.to_timedelta(df['Minute'], unit='m')
-        df = df.set_index('timestamps')
-        df = df.drop(columns=['Year', 'Day', 'Hour', 'Minute', 'date'])
+    # timestamps index
+    df['date'] = pd.to_datetime(df['Year'].astype(str) + df['Day'].astype(str), format='%Y%j')
+    df['timestamps'] = df['date'] + pd.to_timedelta(df['Hour'], unit='h') + pd.to_timedelta(df['Minute'], unit='m')
+    df = df.set_index('timestamps')
+    df = df.drop(columns=['Year', 'Day', 'Hour', 'Minute', 'date'])
 
-        # Replace fill values with NaNs.
-        df_num_rows = len(df)
-        for var, fill_value in config.HRO1_VARS_FILL_VALUE.items():
-            df[var] = df[var].replace(fill_value, np.nan)
+    # Replace fill values with NaNs.
+    for var, fill_value in config.HRO1_VARS_FILL_VALUE.items():
+        df[var] = df[var].replace(fill_value, np.nan)
 
-            # If the number of Nans exceeds the set value, no following processing will be performed.
-            if df[var].isna().sum() > config.MAX_NAN_RATIO * df_num_rows:
-                print(f"Too many NaNs in the '{var}' column. Not use this month's data.")
-                skip = True
-        if skip:
-            continue
-        df = df.interpolate()
-
-        # Save processed files.
-        sfn = filename.replace('omni_min', prefix + '_')
-        sfn_root = os.path.splitext(sfn)[0]
-        for extension in extensions:
-            sfn = sfn_root + '.' + extension
-            if extension == 'pkl':
-                sfp = os.path.join(processed_dir, 'pkl', sfn)
-                df.to_pickle(sfp)
-            elif extension == 'csv':
-                sfp = os.path.join(processed_dir, 'csv', sfn)
-                df.to_csv(sfp, index=True)
-            else:
-                raise ValueError(f"Unsupported file extension: {extension}")
-            print(f"Saved processed file: {sfn}")
+    # Save processed files.
+    sfp = processed_dir / original_filepath.name
+    df.to_csv(sfp, index=True)
 
 
 def generate_yyyymm_pandas(prefix: str, extension: str, start_year: int, start_month: int, end_year: int,
-                           end_month: int, num_months: int = 0, ) -> List[str]:
+                           end_month: int, num_months: int = 0) -> List[str]:
     """
     Generate a list of 'YYYYMM' strings using pandas.
     Specify either a full end date or num_days.
 
     Args:
         num_months: the total number of months to generate (inclusive).
-        sep: The separator of the return filename.
 
     Returns:
         A list of strings in 'YYYYMM' format.
@@ -149,7 +123,7 @@ def generate_yyyymm_pandas(prefix: str, extension: str, start_year: int, start_m
     else:
         raise ValueError("You must specify either 'end_year' and 'end_month' or num_days.")
 
-    return [f"{prefix}_{date_obj.strftime('%Y-%m')}.{extension}" for date_obj in dates]
+    return [f"{prefix}{date_obj.strftime('%Y%m')}.{extension}" for date_obj in dates]
 
 
 def generate_yyyymmdd_pandas(prefix: str, extension: str, start_year: int, start_month: int, start_day: int,
@@ -185,34 +159,110 @@ def all_files_exits(filepaths: List[str]) -> bool:
     return True
 
 
-if __name__ == "__main__":
-    # Check whether the original files exist.
-    if not os.path.exists(config.OMNI_ORIGINAL_DATA_DIR):
-        raise FileNotFoundError(f"Error: The path '{config.OMNI_ORIGINAL_DATA_DIR}' does not exist.")
+def split_df_by_day_and_save(df: pd.DataFrame,
+                             output_dir: str = config.OMNI_DAY_DIR,
+                             file_format: str = 'asc',
+                             ):
+    if not isinstance(df.index, pd.DatetimeIndex):
+        raise ValueError("DataFrame index must be a pandas DatetimeIndex.")
 
-    if not os.path.isdir(config.OMNI_ORIGINAL_DATA_DIR):
-        raise NotADirectoryError(f"Error: The path '{config.OMNI_ORIGINAL_DATA_DIR}' is not a directory.")
+    if df.empty:
+        print("Input DataFrame is empty. No files will be created.")
+        return
 
-    if not os.listdir(config.OMNI_ORIGINAL_DATA_DIR):
-        crawler_omni = Crawler(base_url=config.HRO_MODIFIED_URL_M)
-        links_texts = crawler_omni.get_links(html_tag=config.HTML_TAG_M, href=config.HREF_PATTERN_M)
-        crawler_omni.download_files(links_texts, download_directory=config.OMNI_ORIGINAL_DATA_DIR)
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"Output directory: '{output_dir}'")
 
-    # Rename the filenames of original files.
-    dry_run_input = input("Use dry run mode? (y/n): ").strip().lower()
-    if dry_run_input == "y":
-        rename_files_with_date_hyphen(directory_path=str(config.OMNI_ORIGINAL_DATA_DIR), dry_run=True)
-    elif dry_run_input == "n":
-        rename_files_with_date_hyphen(directory_path=str(config.OMNI_ORIGINAL_DATA_DIR), dry_run=False)
+    grouped_by_day = df.groupby(pd.Grouper(freq='D'))
+
+    if not grouped_by_day:
+        print("No daily groups found in the DataFrame. Ensure index has date information.")
+        return
+
+    file_count = 0
+    for day_timestamp, daily_df in grouped_by_day:
+        day_timestamp: pd.Timestamp
+        if daily_df.empty:
+            print(f"No data for {day_timestamp.date()}. Skipping file creation.")
+            continue
+
+        formatted_date = day_timestamp.strftime('%Y-%m-%d')
+        filename = f"{formatted_date}{file_format}"
+        output_path = os.path.join(output_dir, filename)
+
+        if os.path.isfile(output_path):
+            print(f"File '{filename}' already exists. Skipping file creation.")
+            continue
+
+        print(f"Processing data for {day_timestamp.date()}... Saving to {filename}")
+
+        try:
+            daily_df.to_csv(output_path, index=True)
+            file_count += 1
+        except Exception as e:
+            print(f"Error saving file '{filename}': {e}")
+
+    print(f"\nFinished splitting DataFrame. {file_count} daily file(s) created in '{output_dir}'.")
+
+
+def get_href_links_texts(url, html_tag: str, href_regex_pattern: str, proxies: Optional[dict] = None, ):
+    print("Get links.")
+
+    # Requests
+    try:
+        if proxies:
+            response = requests.get(url=url, proxies=proxies)
+        else:
+            response = requests.get(url)
+        print("Request successfully.")
+    except requests.RequestException as e:
+        print(f"An error occurred: {e}.")
+        return None
+
+    # Find all 'html_tag' elements that contain 'href'.
+    soup = BeautifulSoup(response.text, 'html.parser')
+    link_elements = soup.find_all(html_tag, href=True)
+
+    print("Extracting links and corresponding texts.")
+    links_texts = []
+    file_counts = 0
+    compiled_regex = re.compile(href_regex_pattern)
+    for link_element in link_elements:
+        match = compiled_regex.match(link_element['href'])
+        if not match:
+            continue
+        link = os.path.join(url, link_element['href'])
+        text = link_element.get_text()
+        print(f"Link: {link}, Text: {text}.")
+        links_texts.append({'link': link, 'text': text})
+        file_counts += 1
+    if file_counts == 0:
+        print("No files found.")
+        return None
     else:
-        raise ValueError("Invalid input. Please enter 'y' or 'n'.")
+        print(f"{file_counts} files found.")
+        return links_texts
 
-    # Check whether the processed files exist.
-    pkl_dir = os.path.join(config.OMNI_PROCESSED_DATA_DIR, 'pkl')
-    csv_dir = os.path.join(config.OMNI_PROCESSED_DATA_DIR, 'csv')
-    process_filepaths = os.listdir(pkl_dir) + os.listdir(csv_dir)
-    if not process_filepaths:
-        process_data(original_dir_path=config.OMNI_ORIGINAL_DATA_DIR, processed_dir=config.OMNI_PROCESSED_DATA_DIR,
-                     prefix=config.OMNI_PROCESSED_DATA_PREFIX, extensions=config.OMNI_PROCESSED_DATA_EXTENSIONS)
+
+def download_file(link: str, download_dir: str, filename: str, proxies: Optional[dict] = None, write_mode: str = 'wb',
+                  chunk_size: int = 8192):
+    filepath = os.path.join(download_dir, filename)
+    if os.path.isfile(filepath):
+        print(f"File '{filename}' already exists. Skipping download.")
+        return
+
+    print(f"Downloading file '{filename}'.")
+
+    # Get
+    # If I use proxy, the function will return SSL error. If I do not use proxy, the function will sometimes return Timeout error.
+    if proxies:
+        response = requests.get(url=link, proxies=proxies)
     else:
-        print("All processed files already exits.")
+        response = requests.get(url=link)
+    print("Request successfully.")
+
+    with open(filepath, write_mode) as f:
+        for chunk in response.iter_content(chunk_size=chunk_size):
+            if chunk:
+                f.write(chunk)
+    print(f"File '{filename}' downloaded successfully.")
